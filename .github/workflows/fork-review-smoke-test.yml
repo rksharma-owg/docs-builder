@@ -1,0 +1,65 @@
+name: Fork review smoke-test
+
+on:
+  push:
+    branches: ["codex/callout4226-preflight-20261019"]
+
+permissions:
+  contents: read
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: build (${{ matrix.repository }})
+    strategy:
+      fail-fast: false
+      matrix: 
+        include:
+          - repository: elastic/docs-content
+            landing-page-path-output: /docs
+          - repository: elastic/elasticsearch
+            landing-page-path-output: /docs/reference
+          - repository: elastic/opentelemetry
+            landing-page-path-output: /docs/reference
+            
+            # This is a random repository that should not have a docset.yml
+          - repository: elastic/oblt-actions
+            landing-page-path-output: ""
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 1860cd765b8ddb628e59ac823c1394fe2812a968
+          persist-credentials: false
+      - name: Verify tested source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "1860cd765b8ddb628e59ac823c1394fe2812a968"
+          git merge-base --is-ancestor 8e57603793600032f95bc33011d6e1d532d49ad5 HEAD
+          git log -1 --format=fuller
+      - name: Bootstrap Action Workspace
+        uses: ./.github/actions/bootstrap
+        
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ matrix.repository }}
+          path: test-repo
+          persist-credentials: false
+
+      - name: Build documentation
+        id: docs-build
+        run: |
+          dotnet run --project src/tooling/docs-builder -- --strict --path-prefix "/docs" -p test-repo
+      
+      - name: Verify landing-page-path output
+        run: test "${STEPS_DOCS_BUILD_OUTPUTS_LANDING_PAGE_PATH}" = "${{ matrix.landing-page-path-output }}"
+        env:
+          STEPS_DOCS_BUILD_OUTPUTS_LANDING_PAGE_PATH: ${{ steps.docs-build.outputs.landing-page-path }}
+
+      - name: Verify link validation
+        run: |
+          dotnet run --project src/tooling/docs-builder -- inbound-links validate-link-reference -p test-repo
+      
