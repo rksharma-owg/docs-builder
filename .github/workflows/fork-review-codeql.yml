@@ -51,6 +51,7 @@ jobs:
       uses: actions/checkout@v7
       with:
         ref: 1860cd765b8ddb628e59ac823c1394fe2812a968
+        fetch-depth: 0
         persist-credentials: false
     - name: Verify tested source
       shell: bash
