@@ -1,0 +1,224 @@
+name: Fork review ci
+
+on:
+  push:
+    branches: ["codex/callout4226-preflight-20261020"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  validate-assembler:
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "7a3f1f785735bd324c9b8cae89b9590cea264da0"
+          git merge-base --is-ancestor 703fae9ac198a24722a301424112f21ba17873bc HEAD
+          git log -1 --format=fuller
+
+      - name: Bootstrap Action Workspace
+        id: bootstrap
+        uses: ./.github/actions/bootstrap
+
+      - name: Validate Navigation
+        run: dotnet run --project src/tooling/docs-builder -c release -- assembler navigation validate
+
+      - name: Validate Content Sources
+        run: dotnet run --project src/tooling/docs-builder -c release -- assembler content-source validate
+
+  build-link-index-updater-lambda:
+    needs: [lint]
+    uses: ./.github/workflows/build-link-index-updater-lambda.yml
+    with:
+      ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+
+  build-openapi-index-lambda:
+    needs: [lint]
+    uses: ./.github/workflows/build-openapi-index-lambda.yml
+    with:
+      ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+
+  npm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/Elastic.Documentation.Site
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "7a3f1f785735bd324c9b8cae89b9590cea264da0"
+          git merge-base --is-ancestor 703fae9ac198a24722a301424112f21ba17873bc HEAD
+          git log -1 --format=fuller
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          cache: npm
+          cache-dependency-path: src/Elastic.Documentation.Site/package-lock.json
+          node-version-file: .nvmrc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check shai-hulud attack
+        uses: ./.github/actions/check-shai-hulud
+        with:
+          path: src/Elastic.Documentation.Site
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format
+        run: npm run fmt:check
+
+      - name: Compile
+        run: npm run compile:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm run test
+
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "7a3f1f785735bd324c9b8cae89b9590cea264da0"
+          git merge-base --is-ancestor 703fae9ac198a24722a301424112f21ba17873bc HEAD
+          git log -1 --format=fuller
+
+      - name: Lint
+        uses: nullean/curb@c399bcd201b5ca466cfbcf5776825a629abf4f4b # 0.7.1
+        with:
+          command: check
+          path: .
+
+  build:
+    needs: [lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+         - ubuntu-latest
+         - macos-latest
+         - windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "7a3f1f785735bd324c9b8cae89b9590cea264da0"
+          git merge-base --is-ancestor 703fae9ac198a24722a301424112f21ba17873bc HEAD
+          git log -1 --format=fuller
+      - name: Bootstrap Action Workspace
+        id: bootstrap
+        uses: ./.github/actions/bootstrap
+
+      - name: Compile
+        run: dotnet run --project build -c release -- compile
+
+      - name: Check CLI schema is up to date
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          dotnet run --project src/tooling/docs-builder -c release --no-build -- __schema > docs/cli-schema.json.tmp
+          diff <(jq 'del(.version)' docs/cli-schema.json) <(jq 'del(.version)' docs/cli-schema.json.tmp) || (echo "docs/cli-schema.json is out of date — run: dotnet run --project src/tooling/docs-builder -- __schema > docs/cli-schema.json" && exit 1)
+          rm docs/cli-schema.json.tmp
+
+      - name: Test
+        run: dotnet run --project build -c release -- unit-test
+
+      - name: Publish AOT
+        if: false # publish containers already validates AOT build
+        run: dotnet run --project build -c release -- publishbinaries
+
+      - name: Publish Containers
+        if: false
+        env:
+          DOCKER_NO_PUBLISH: true
+        run: dotnet run --project build -c release -- publishcontainers
+
+      - name: Run Container
+        if: false
+        run: dotnet run --project build -c release -- runlocalcontainer
+
+
+  integration:
+    # TODO temporarily disabled: credentials now actually reach the tests (Parameters:-prefixed
+    # secrets) which surfaced failures — re-enabling is tracked in a dedicated PR.
+    if: false
+    runs-on: docs-builder-latest-16
+    environment: integration-tests
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 7a3f1f785735bd324c9b8cae89b9590cea264da0
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "7a3f1f785735bd324c9b8cae89b9590cea264da0"
+          git merge-base --is-ancestor 703fae9ac198a24722a301424112f21ba17873bc HEAD
+          git log -1 --format=fuller
+
+      - name: Bootstrap Action Workspace
+        id: bootstrap
+        uses: ./.github/actions/bootstrap
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::197730964718:role/elastic-docs-v3-integration-tests
+          aws-region: us-east-1
+
+      - name: Fetch ES credentials
+        run: |
+          ES_URL=$(aws ssm get-parameter --name /elastic-docs-v3/prod/docs-elasticsearch-github-actions-readonly-url --with-decryption --query Parameter.Value --output text)
+          ES_KEY=$(aws ssm get-parameter --name /elastic-docs-v3/prod/docs-elasticsearch-github-actions-readonly-api-key --with-decryption --query Parameter.Value --output text)
+          echo "::add-mask::$ES_URL"
+          echo "::add-mask::$ES_KEY"
+          dotnet tool restore
+          dotnet aspire secret set ElasticsearchUrl "$ES_URL"
+          dotnet aspire secret set ElasticsearchApiKey "$ES_KEY"
+
+      - name: Integration Tests
+        env:
+          ENVIRONMENT: prod
+        run: dotnet run --project build -c release -- integrate
